@@ -57,10 +57,20 @@ impl Ptracer {
     ///
     /// *WARNING*: Only one concurrent instance is currently supported!
     pub fn spawn(path: &Path, args: &[String]) -> nix::Result<Self> {
-        let pid = spawn(path.to_str().unwrap(), args)?;
+        Self::init(spawn(path.to_str().unwrap(), args)?)
+    }
 
+    /// Attach to a debugee.
+    ///
+    /// *WARNING*: Only one concurrent instance is currently supported!
+    pub fn attach(pid: Pid) -> nix::Result<Self> {
+        ptrace::attach(pid)?;
+        Self::init(pid)
+    }
+
+    fn init(pid: Pid) -> nix::Result<Self> {
         let event = wait()?;
-        debug!("Process (PID={}) spawned: {:?}", pid, event);
+        debug!("Attached to process (PID={}): {:?}", pid, event);
         assert_eq!(event.pid(), Some(pid));
 
         #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -184,6 +194,15 @@ impl Ptracer {
     /// Returns `true` when more `ptrace` events need to be handled.
     fn cont_aux(&mut self, how: ContinueMode, ptrace_request: PtraceRequest) -> nix::Result<bool> {
         let event = self.event;
+
+        // add thread if missing
+        if let Some(pid) = event.pid() {
+            if !self.threads.contains_key(&pid) {
+                debug!("New thread (PID={}) detected", pid);
+                self.threads.insert(pid, ThreadState::Running);
+            }
+        }
+
         let is_stopped = match event {
             WaitStatus::Exited(_, _) => false,
             WaitStatus::Signaled(_, _, _) => false,
